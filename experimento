@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Experimentos para el algoritmo de decisión (Alice vs Bob en cadena binaria).
+Incluye:
+  1) Implementación del algoritmo O(n).
+  2) Pruebas de código con casos etiquetados y casos adicionales.
+  3) Experimento de escalabilidad midiendo tiempo y #iteraciones del bucle.
+  4) Gráfico de tiempo promedio vs n y exportación de resultados a CSV.
+
+Uso rápido:
+    python3 experimentos_alice_bob.py --run-all
+
+Dependencias: pandas, matplotlib
+"""
+
+import argparse
+import random
+import time
+from typing import Tuple, Dict, List
+import pandas as pd
+import matplotlib.pyplot as plt
+import os
+
+# -------------------------------
+# Algoritmo de decisión
+# -------------------------------
+
+def winner(n: int, k: int, s: str) -> str:
+    """
+    Devuelve 'Alice' o 'Bob' según el criterio:
+      - Si c = #1(s) es 0 o <= k -> Alice
+      - Si c > k -> existe ventana contigua de tamaño k tal que
+        ones_outside <= k ? Alice : Bob
+    """
+    c = s.count('1')
+    if c == 0 or c <= k:
+        return "Alice"
+    # Prefijos para contar 1s en ventanas O(1)
+    pref = [0]*(n+1)
+    for i, ch in enumerate(s):
+        pref[i+1] = pref[i] + (ch == '1')
+    # Barrido de ventanas [L, L+k)
+    for L in range(0, n - k + 1):
+        ones_in = pref[L+k] - pref[L]
+        ones_out = c - ones_in
+        if ones_out <= k:
+            return "Alice"
+    return "Bob"
+
+
+# -------------------------------
+# Pruebas de código
+# -------------------------------
+
+def run_unit_tests() -> pd.DataFrame:
+    tests = [
+        (5, 2, "11011", "Bob",   "Ninguna ventana k=2 deja <=k unos fuera."),
+        (6, 1, "010000", "Alice","c=1<=k; Alice apaga todo de inmediato."),
+        (4, 1, "1111",   "Bob",  "c=4>k. Toda ventana 1 deja 3 fuera (>1)."),
+        (7, 4, "1011011","Alice","Existe ventana k=4 con <=k unos fuera."),
+        (3, 1, "000",    "Alice","c=0; trivial."),
+        (3, 1, "100",    "Alice","c=1<=k; apaga y gana."),
+        (3, 2, "111",    "Alice","c=3>k. Ventana L=0 deja ones_out=1<=k."),
+        (6, 4, "111111", "Alice","Contraejemplo a regla simplista: Alice gana."),
+        (8, 3, "10110110","Bob", "Caso interesante adicional."),
+        (6, 4, "000000", "Alice","c=0; trivial."),
+        (10, 3, "1010010100", None, "Derivado por algoritmo."),
+        (10, 5, "1100110011", None, "Derivado por algoritmo."),
+    ]
+    rows: List[Dict] = []
+    for n, k, s, expected, rationale in tests:
+        out = winner(n, k, s)
+        ok = (expected is None) or (out.lower() == expected.lower())
+        rows.append({
+            "n": n, "k": k, "s": s,
+            "Salida algoritmo": out,
+            "Esperado": expected if expected is not None else "(derivado)",
+            "¿Coincide?": ok,
+            "Razonamiento": rationale
+        })
+    return pd.DataFrame(rows)
+
+
+# -------------------------------
+# Escalabilidad
+# -------------------------------
+
+def winner_measured(n: int, k: int, s: str) -> Tuple[str, int]:
+    """Versión que cuenta iteraciones del bucle de ventanas."""
+    c = s.count('1')
+    if c == 0 or c <= k:
+        return "Alice", 0
+    pref = [0]*(n+1)
+    for i, ch in enumerate(s):
+        pref[i+1] = pref[i] + (ch == '1')
+    iters = 0
+    for L in range(0, n - k + 1):
+        iters += 1
+        ones_in = pref[L+k] - pref[L]
+        ones_out = c - ones_in
+        if ones_out <= k:
+            return "Alice", iters
+    return "Bob", iters
+
+
+def run_scaling_experiment(sizes: List[int], k_ratio: float = 0.2,
+                           density: float = 0.5, trials: int = 7) -> pd.DataFrame:
+    """Mide tiempo promedio (ms) y #iteraciones promedio para distintos n."""
+    random.seed(42)
+    results = []
+    for n in sizes:
+        k = max(1, min(n-1, int(n * k_ratio)))
+        runtimes = []
+        iters_list = []
+        for _ in range(trials):
+            s = "".join('1' if random.random() < density else '0' for _ in range(n))
+            t0 = time.perf_counter()
+            _, iters = winner_measured(n, k, s)
+            t1 = time.perf_counter()
+            runtimes.append((t1 - t0)*1000.0)
+            iters_list.append(iters)
+        mean_ms = sum(runtimes)/len(runtimes)
+        std_ms = (sum((x - mean_ms)**2 for x in runtimes)/len(runtimes))**0.5
+        results.append({
+            "n": n, "k": k,
+            "mean_ms": mean_ms,
+            "std_ms": std_ms,
+            "mean_iters": sum(iters_list)/len(iters_list),
+            "min_iters": min(iters_list),
+            "max_iters": max(iters_list)
+        })
+    return pd.DataFrame(results)
+
+
+def plot_runtime(df_scaling: pd.DataFrame, outpath: str) -> None:
+    plt.figure()
+    plt.plot(df_scaling["n"], df_scaling["mean_ms"], marker='o')
+    plt.xlabel("n (tamaño de la entrada)")
+    plt.ylabel("Tiempo promedio (ms)")
+    plt.title("Tiempo de ejecución promedio vs n (k ≈ 0.2·n)")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(outpath, dpi=160)
+    plt.show()
+
+
+# -------------------------------
+# CLI
+# -------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(description="Experimentos del algoritmo (Alice vs Bob).")
+    parser.add_argument("--run-all", action="store_true",
+                        help="Ejecuta pruebas, escalabilidad y genera gráfico/CSV.")
+    parser.add_argument("--sizes", type=str, default="200,400,800,1600,3200,6400,12800",
+                        help="Lista de n separados por coma para el experimento de escalabilidad.")
+    parser.add_argument("--k-ratio", type=float, default=0.2,
+                        help="Proporción k≈ratio·n (1<=k<n).")
+    parser.add_argument("--density", type=float, default=0.5,
+                        help="Probabilidad de '1' al generar cadenas.")
+    parser.add_argument("--trials", type=int, default=7,
+                        help="Repeticiones por tamaño.")
+    parser.add_argument("--outdir", type=str, default=".",
+                        help="Directorio de salida para CSV/gráfico.")
+    args = parser.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+
+    if args.run_all:
+        # 1) Pruebas
+        df_tests = run_unit_tests()
+        tests_csv = os.path.join(args.outdir, "resultados_pruebas.csv")
+        df_tests.to_csv(tests_csv, index=False, encoding="utf-8")
+        print(f"[OK] Pruebas guardadas en: {tests_csv}")
+        print(df_tests.to_string(index=False))
+
+        # 2) Escalabilidad
+        sizes = [int(x) for x in args.sizes.split(",") if x.strip()]
+        df_scaling = run_scaling_experiment(sizes, k_ratio=args.k_ratio,
+                                            density=args.density, trials=args.trials)
+        scaling_csv = os.path.join(args.outdir, "resultados_escalabilidad.csv")
+        df_scaling.to_csv(scaling_csv, index=False, encoding="utf-8")
+        print(f"[OK] Escalabilidad guardada en: {scaling_csv}")
+        print(df_scaling.to_string(index=False))
+
+        # 3) Gráfico
+        plot_path = os.path.join(args.outdir, "runtime_vs_n.png")
+        plot_runtime(df_scaling, plot_path)
+        print(f"[OK] Gráfico guardado en: {plot_path}")
+
+    else:
+        print("Use --run-all para ejecutar todos los experimentos.")
+        print("Ejemplo: python3 experimentos_alice_bob.py --run-all --outdir=./salidas")
+
+if __name__ == "__main__":
+    main()
